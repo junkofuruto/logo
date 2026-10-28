@@ -1,0 +1,77 @@
+name: release
+
+on:
+  push:
+    branches: [master]
+    paths-ignore:
+      - "**.md"
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump: minor (default) or major"
+        required: false
+        default: "minor"
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Test
+        run: go test ./...
+
+      - name: Tag release
+        env:
+          DISPATCH_BUMP: ${{ github.event.inputs.bump }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          latest=$(git tag -l 'v*' --sort=-v:refname | head -n1)
+
+          if [ -z "$latest" ]; then
+            version="v1.0.0"
+          else
+            major=${latest#v}
+            minor=${major#*.}
+            major=${major%%.*}
+            minor=${minor%%.*}
+
+            bump="minor"
+            case "$DISPATCH_BUMP" in
+              major) bump="major" ;;
+            esac
+            message=$(git log -1 --pretty=%B)
+            case "$message" in
+              major!* | *"BREAKING CHANGE"*) bump="major" ;;
+            esac
+
+            if [ "$bump" = "major" ]; then
+              version="v$((major + 1)).0.0"
+            else
+              version="v$major.$((minor + 1)).0"
+            fi
+          fi
+
+          git tag -a "$version" -m "$version"
+          git push origin "$version"
+          echo "Tagged $version (latest was: ${latest:-none})"
+
+          previous=$(git tag -l 'v*' --sort=-v:refname | sed -n '2p')
+          if [ -n "$previous" ]; then
+            git log --pretty="- %s (%h)" "$previous..HEAD" > notes.md
+          else
+            echo "- initial release" > notes.md
+          fi
+          gh release create "$version" --notes-file notes.md
