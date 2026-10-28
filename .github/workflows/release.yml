@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       bump:
-        description: "Version bump: minor (default) or major"
+        description: "Force major bump"
         required: false
         default: "minor"
 
@@ -32,7 +32,7 @@ jobs:
           if [ -n "$(find . -name '*.go' -not -path './.git/*' | head -n1)" ]; then
             go test ./...
           else
-            echo "[i] no Go packages found, skipping tests"
+            echo "No Go packages found, skipping tests"
           fi
 
       - name: Tag release
@@ -43,50 +43,54 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          latest=$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]{3}$' | sort -V | tail -n1)
-          previous="$latest"
+          latest=$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)
 
+          major=0
+          minor=0
+          patch=0
+          previous=""
           if [ -z "$latest" ]; then
-            major=0
-            minor=0
-            bump="minor"
+            patch=$(git rev-list --count HEAD)
           else
+            previous="$latest"
             core=${latest#v}
             major=${core%%.*}
-            minor=$((10#${core#*.}))
-            bump="minor"
+            rest=${core#*.}
+            minor=$((10#${rest%%.*}))
+            patch=$(git rev-list --count "$latest..HEAD")
           fi
 
+          is_major=0
           case "$DISPATCH_BUMP" in
-            major) bump="major" ;;
+            major) is_major=1 ;;
           esac
-          message=$(git log -1 --pretty=%B)
-          case "$message" in
-            major:* | *"BREAKING CHANGE"*) bump="major" ;;
-          esac
+          if [ "$is_major" -eq 0 ]; then
+            if [ -n "$previous" ]; then
+              if git log --pretty=%s "$previous..HEAD" | grep -Eq '^(major:|.*BREAKING CHANGE)'; then
+                is_major=1
+              fi
+            else
+              if git log --pretty=%s | grep -Eq '^(major:|.*BREAKING CHANGE)'; then
+                is_major=1
+              fi
+            fi
+          fi
 
-          if [ "$bump" = "major" ]; then
+          if [ "$is_major" -eq 1 ]; then
             major=$((major + 1))
-            minor=1
+            minor=0
           else
             minor=$((minor + 1))
           fi
-          if [ "$minor" -gt 999 ]; then
-            major=$((major + 1))
-            minor=1
-          fi
 
-          pretty="v$major.$(printf '%03d' "$minor")"
-          alias="v$major.0.$minor"
-
-          git tag -a "$pretty" -m "Release $pretty"
-          git tag -a "$alias" -m "Alias $alias for $pretty"
-          git push origin "$pretty" "$alias"
-          echo "Tagged $pretty (Go: $alias), previous was: ${previous:-none}"
+          version="v$major.$minor.$patch"
+          git tag -a "$version" -m "Release $version"
+          git push origin "$version"
+          echo "Tagged $version (previous: ${previous:-none}, commits in range: $patch)"
 
           if [ -n "$previous" ]; then
             git log --pretty="- %s (%h)" "$previous..HEAD" > notes.md
           else
-            echo "- initial release" > notes.md
+            git log --pretty="- %s (%h)" HEAD > notes.md
           fi
-          gh release create "$pretty" --notes-file notes.md
+          gh release create "$version" --notes-file notes.md
